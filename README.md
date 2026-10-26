@@ -1,4 +1,4 @@
-# ARIS500 Model
+# ARIS500
 
 Systematic equity model by Alexander Villax.
 
