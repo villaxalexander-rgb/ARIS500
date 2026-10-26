@@ -1,0 +1,10 @@
+numpy
+pandas
+pyarrow
+matplotlib
+statsmodels
+wrds
+jupyterlab
+nbclient
+nbformat
+nbstripout

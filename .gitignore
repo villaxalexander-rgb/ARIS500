@@ -1,0 +1,10 @@
+/data/
+*.parquet
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+.DS_Store
+
+# Personal exploratory notebooks are preserved locally but are not supported workflows.
+notebooks/scratch/
