@@ -6,6 +6,8 @@ Selection holds the configured top-ranked fraction with a rarely binding count
 guardrail; weights follow the configured benchmark scheme subject to
 the optional minimum-position floor and name/sector/beta constraints, terminal
 rows are excluded, and transaction costs vary by contemporaneous size bucket.
+The name/sector/beta weight solver runs in C++ (``native/aris_core.cpp``) when
+it can be built, and in the identical Python reference below otherwise.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from config import (
     TRADING_COST_BPS,
     WEIGHT_SCHEME,
 )
+from src import native_core
 from src.model.composite import build_model_score
 from src.signals.beta import market_beta
 from src.utils import forward_returns
@@ -332,6 +335,75 @@ def _apply_minimum_position_weight(
     return retained, retained_target, drops
 
 
+def _sector_layout(
+    indexed: pd.DataFrame,
+    benchmark: pd.DataFrame,
+) -> tuple[pd.Index, np.ndarray, pd.Series]:
+    """Return sorted sectors, each name's sector position, and benchmark weights."""
+    benchmark_sector = benchmark.groupby("sector")["benchmark_weight"].sum()
+    selected_sectors = indexed.groupby("sector")["permno"].size().index
+    sectors = benchmark_sector.index.union(selected_sectors)
+    codes = sectors.get_indexer(indexed["sector"]).astype(np.int32)
+    return sectors, codes, benchmark_sector.reindex(sectors, fill_value=0.0)
+
+
+def _sector_table(
+    sectors: pd.Index,
+    benchmark_sector: pd.Series,
+    portfolio_sector: np.ndarray,
+) -> pd.DataFrame:
+    """Tabulate benchmark, portfolio, and active weight by sector."""
+    sector_table = pd.DataFrame(
+        {
+            "benchmark_sector_weight": benchmark_sector,
+            "portfolio_sector_weight": pd.Series(portfolio_sector, index=sectors),
+        }
+    ).reset_index(names="sector")
+    sector_table["sector_deviation"] = (
+        sector_table["portfolio_sector_weight"]
+        - sector_table["benchmark_sector_weight"]
+    )
+    return sector_table
+
+
+def _raise_native_status(status: int) -> None:
+    """Translate a native solver failure into the Python reference's error."""
+    if status == native_core.LOWER_ABOVE_UPPER:
+        raise ValueError("Portfolio constraints have a lower bound above an upper bound.")
+    if status == native_core.INFEASIBLE_TOTAL:
+        raise ValueError(
+            "Portfolio constraints are infeasible: bounded weights cannot sum "
+            "to the required total."
+        )
+    if status != native_core.OK:
+        raise RuntimeError(f"Native weight solver failed with status {status}.")
+
+
+def _native_name_sector_caps(
+    weighted: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    raw_target: pd.Series,
+    max_name_weight: float,
+    min_position_weight: float,
+) -> tuple[pd.Series, pd.DataFrame]:
+    """Run ``_apply_name_sector_caps`` through the C++ solver."""
+    indexed = weighted.set_index("permno", drop=False)
+    sectors, codes, benchmark_sector = _sector_layout(indexed, benchmark)
+    status, weights, portfolio_sector = native_core.name_sector_caps(
+        raw_target.reindex(indexed.index).astype(float).to_numpy(),
+        codes,
+        benchmark_sector.to_numpy(),
+        max_name_weight,
+        min_position_weight,
+        MAX_SECTOR_DEVIATION,
+    )
+    _raise_native_status(status)
+    return (
+        pd.Series(weights, index=indexed.index, dtype="float64"),
+        _sector_table(sectors, benchmark_sector, portfolio_sector),
+    )
+
+
 def _apply_name_sector_caps(
     weighted: pd.DataFrame,
     benchmark: pd.DataFrame,
@@ -340,6 +412,10 @@ def _apply_name_sector_caps(
     min_position_weight: float = 0.0,
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Project raw weights onto full-investment, position, and sector bounds."""
+    if native_core.available():
+        return _native_name_sector_caps(
+            weighted, benchmark, raw_target, max_name_weight, min_position_weight
+        )
     indexed = weighted.set_index("permno", drop=False)
     raw_target = raw_target.reindex(indexed.index).astype(float)
     raw_target = raw_target / raw_target.sum()
@@ -402,6 +478,34 @@ def _beta_constrained_weights(
     min_position_weight: float,
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Tilt minimally along beta until the nearest configured bound is reached."""
+    if native_core.available():
+        indexed = weighted.set_index("permno", drop=False)
+        sectors, codes, benchmark_sector = _sector_layout(indexed, benchmark)
+        status, weights, portfolio_sector = native_core.beta_constrained_weights(
+            initial_weights.reindex(indexed.index).to_numpy(dtype="float64"),
+            constraint_betas.reindex(indexed.index).to_numpy(dtype="float64"),
+            codes,
+            benchmark_sector.to_numpy(),
+            target_beta,
+            max_name_weight,
+            min_position_weight,
+            MAX_SECTOR_DEVIATION,
+        )
+        if status == native_core.BETA_INFEASIBLE:
+            direction = (
+                "below"
+                if _portfolio_beta(initial_weights, constraint_betas) > target_beta
+                else "above"
+            )
+            raise ValueError(
+                f"Beta constraint is infeasible: could not move beta {direction} "
+                f"{target_beta:.4f} while respecting name and sector caps."
+            )
+        _raise_native_status(status)
+        return (
+            pd.Series(weights, index=indexed.index, dtype="float64"),
+            _sector_table(sectors, benchmark_sector, portfolio_sector),
+        )
     center = _portfolio_beta(initial_weights, constraint_betas)
 
     def candidate(tilt: float) -> tuple[pd.Series, pd.DataFrame, float]:

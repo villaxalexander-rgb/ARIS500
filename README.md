@@ -279,6 +279,7 @@ notebooks/
   04_backtest.ipynb                    Composite, portfolio, and analysis
   05_stock_lookup.ipynb                Interactive ticker lookup
 src/
+  native_core.py                       Builds and loads the C++ weight solver
   notebook_support.py                  Shared notebook confirmations and displays
   signal_evaluation.py                 Generic and block-specific research evaluation
   utils.py                             Neutral calendar-return alignment helpers
@@ -302,6 +303,11 @@ docs/
   data_dictionary.csv                   Every final research-panel column
   methodology.md                       Model method, results, and limitations
   signal_log.md                        Complete signal research record
+native/
+  aris_core.cpp                        C++ name/sector/beta weight solver
+  build/                               Compiled library; Git-ignored
+tests/
+  test_native_parity.py                C++ versus Python bitwise parity tests
 data/                                  Generated local files; Git-ignored
 ```
 
@@ -351,6 +357,32 @@ The research bar is an absolute IC t-statistic of 3, together with coherent
 equal- and value-weighted spreads, size-group evidence, economic reasoning, and
 diversification against existing blocks. Failed tests stay in the research
 record.
+
+## C++ weight solver
+
+Portfolio construction is split between Python and C++. Python handles data,
+signals, ranking, the backtest, and the notebooks. The inner weight solver,
+which fits each month's name caps, sector bands, and beta band, runs in C++
+(`native/aris_core.cpp`) because it accounted for about 97% of construction
+time.
+
+- **No setup step.** The first portfolio run compiles the library into
+  `native/build/` with the system C++ compiler (Xcode Command Line Tools on
+  macOS, `g++` or `clang++` on Linux).
+- **Identical results.** The C++ code reproduces numpy's and pandas' summation
+  order, so weights, diagnostics, and returns match the Python reference bit for
+  bit. `tests/test_native_parity.py` checks this.
+- **Automatic fallback.** If no compiler is available, or `ARIS500_NATIVE=0` is
+  set, the same Python reference in `src/model/portfolio.py` runs instead.
+- **Speed.** On a synthetic 3,000-stock, 2007–2025 panel, construction took
+  2.5 seconds instead of 48.5 seconds, about 20 times faster. The gain is largest
+  in the sensitivity runners, which rebuild the portfolio many times.
+
+Run the parity tests after changing either implementation:
+
+```bash
+python3 tests/test_native_parity.py
+```
 
 ## Optional command-line entry points for maintainers
 

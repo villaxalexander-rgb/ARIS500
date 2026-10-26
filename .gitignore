@@ -1,6 +1,7 @@
 /data/
 *.parquet
 __pycache__/
+native/build/
 *.pyc
 .ipynb_checkpoints/
 .env
