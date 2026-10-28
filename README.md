@@ -1,6 +1,6 @@
 # ARIS500
 
-Systematic equity model by Alexander Villax.
+Systematic equity model by Alexander BSV.
 
 This project builds a point-in-time US equity research panel, evaluates
 cross-sectional stock-selection signals, combines five accepted ideas into a
